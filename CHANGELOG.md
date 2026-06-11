@@ -154,5 +154,6 @@ minor = added content, patch = fixes/wording).
 - `scripts/lint.sh`, `scripts/test.sh`: the format/lint and test/coverage gates
   for Python and Go.
 
+[2.1.0]: https://github.com/<your-username>/code-craft/releases/tag/v2.1.0
 [2.0.0]: https://github.com/<your-username>/code-craft/releases/tag/v2.0.0
 [1.0.0]: https://github.com/<your-username>/code-craft/releases/tag/v1.0.0
