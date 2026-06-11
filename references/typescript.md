@@ -1,58 +1,40 @@
 # TypeScript idioms
 
-Language-specific guidance for the `SKILL.md` principles. Open this when writing
-TypeScript; cross-reference `python.md` / `golang.md` only if a decision spans
-languages.
-
-Biased toward **server-side Node** (Fastify, Express, queue workers, CLIs); a
-"Browser / React additions" section at the end covers front-end deltas.
+Language-specific guidance for `SKILL.md`. Open when writing TypeScript / JavaScript / TSX. Biased toward **server-side Node** (Fastify, Express, queue workers, CLIs); browser/React deltas at the end.
 
 ## Project layout
 
 ```
 project/
 ├── package.json
-├── tsconfig.json           # strict: true, no implicit any
+├── tsconfig.json           # strict: true
 ├── src/
-│   ├── index.ts            # tiny: load config, wire deps, start server
+│   ├── index.ts            # composition root: load config, wire deps, start server
 │   ├── config/             # env loading + named constants
 │   ├── domain/             # pure domain logic, no I/O, no SQL
-│   ├── adapters/           # one folder per external dependency
-│   │   ├── postgres/
-│   │   ├── redis/
-│   │   └── http/
+│   ├── adapters/           # one folder per external dependency (postgres/, redis/, http/)
 │   └── handlers/           # HTTP routes, queue consumers, CLI subcommands
-└── test/
-    ├── unit/
-    └── integration/
+└── test/{unit,integration}/
 ```
 
-- `src/index.ts` is the composition root — load config, instantiate adapters,
-  inject into domain, start the server; nothing more.
-- `domain/` imports only from `domain/` and `config/`. An eslint
-  import-restriction rule catches drift.
-- **No default exports** — they rename silently across files and break
-  refactors. Named exports everywhere.
+- `domain/` imports only from `domain/` and `config/` — an eslint import-restriction rule catches drift.
+- **No default exports** — they rename silently across files and break refactors. Named exports everywhere.
 
 ## Type system idioms
 
-Run `tsc --strict` (`noImplicitAny`, `strictNullChecks`, `strictFunctionTypes`,
-…). Non-negotiable.
+`tsc --strict` is non-negotiable.
 
-**Banned without justification:**
+### Banned without justification
 
-- `any` — except type-level workarounds with an inline why-comment
-  (`@typescript-eslint/no-explicit-any` on).
-- `as` cast — except at trust boundaries (`as unknown as T` after schema
-  validation). Most `as` uses are bugs hiding from the compiler.
-- `Function` / `Object` types — too wide; use a specific signature.
-- Non-null `!` — except right after narrowing the compiler can't see; prefer
-  `if (x === undefined) throw ...`.
+- `any` — except type-level workarounds with an inline reason. `@typescript-eslint/no-explicit-any` is on.
+- `as` cast — except at trust boundaries (`as unknown as T` after schema validation). Most `as` is a bug hiding from the compiler.
+- `Function` and `Object` types — too wide; use a specific signature.
+- Non-null `!` — except immediately after a narrowing the compiler can't see. Prefer `if (x === undefined) throw ...`.
 
-**Prefer:**
+### Prefer
 
-- `unknown` over `any` when the type isn't yet known — forces a narrowing.
-- Discriminated unions for state machines and result types:
+- `unknown` over `any` — forces narrowing before use.
+- **Discriminated unions** for state machines and result types; `switch (result.kind)` + compiler exhaustiveness:
 
   ```ts
   type FetchResult =
@@ -61,21 +43,13 @@ Run `tsc --strict` (`noImplicitAny`, `strictNullChecks`, `strictFunctionTypes`,
     | { kind: "transient_error"; cause: Error };
   ```
 
-  The caller `switch (result.kind)` and the compiler exhaustiveness-checks.
-- `type` for unions/aliases, `interface` for extensible object shapes — both
-  compile away, pick by intent.
-- `readonly` on params/properties that shouldn't mutate — caught at the
-  keystroke.
-- `as const` for literal-narrowing constants:
+- `type` for unions/aliases, `interface` for extensible object shapes — pick by intent.
+- `readonly` on parameters/properties that shouldn't mutate — the type error catches the bug at the keystroke.
+- `as const` for literal narrowing: `const HTTP_METHODS = ["GET","POST","PUT","DELETE"] as const; type HttpMethod = typeof HTTP_METHODS[number];`
 
-  ```ts
-  const HTTP_METHODS = ["GET", "POST", "PUT", "DELETE"] as const;
-  type HttpMethod = typeof HTTP_METHODS[number];
-  // HttpMethod = "GET" | "POST" | "PUT" | "DELETE"
-  ```
+### Interfaces at the consumer
 
-**Interfaces at the consumer** — same rule as Python `Protocol` and Go
-interfaces:
+Same rule as Python `Protocol` / Go interfaces — the consumer owns the contract; the adapter implements structurally (no `implements` needed); `index.ts` wires them.
 
 ```ts
 // src/domain/user-service.ts
@@ -83,326 +57,276 @@ export interface UserRepository {
   get(userId: string): Promise<User | null>;
   save(user: User): Promise<void>;
 }
-
-export class UserService {
-  constructor(private readonly repo: UserRepository) {}
-  // ...
-}
 ```
-
-The Postgres impl in `src/adapters/postgres/user-repository.ts` implements it
-structurally (no `implements` needed); `index.ts` wires them.
 
 ## Errors
 
-JS inherited `throw` from Java with neither typed nor checked exceptions.
-Conventions to compensate:
+### Always throw `Error` (or subclass), never strings/objects
 
-**Always throw `Error` (or a subclass), never strings/objects** — the stack
-trace lives on `Error`:
+`throw "user not found"` makes the catch-site value a string and loses the stack trace.
 
-```ts
-// BAD — `throw "user not found"` makes `err` a string at the catch site
-throw "user not found";
-
-// GOOD
-throw new UserNotFoundError(userId);
-```
-
-**Define a small hierarchy:**
+### Small domain hierarchy
 
 ```ts
 export class UserServiceError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
-    this.name = new.target.name;
+    this.name = new.target.name;   // err.name survives JSON-serialized logs
   }
 }
-
 export class UserNotFoundError extends UserServiceError {}
 export class UserAlreadyExistsError extends UserServiceError {}
 ```
 
-`name = new.target.name` makes `err.name === "UserNotFoundError"` so JSON logs
-preserve the type. `cause` (ES2022 `Error` constructor) replaces stuffing the
-original into a custom field.
+`cause` (ES2022 `Error` option) carries the original — don't stuff it into a custom field.
 
-**Wrap library errors at the adapter boundary:**
+### Wrap library errors at the adapter boundary
 
 ```ts
-async save(user: User): Promise<void> {
-  try {
-    await this.pool.query(INSERT_USER_SQL, [user.id, user.email]);
-  } catch (err: unknown) {
-    if (err instanceof DatabaseError && err.code === "23505") {  // unique_violation
-      throw new UserAlreadyExistsError(
-        `duplicate user id: ${user.id}`,
-        { cause: err },
-      );
-    }
-    throw err;
+try {
+  await this.pool.query(INSERT_USER_SQL, [user.id, user.email]);
+} catch (err: unknown) {
+  if (err instanceof DatabaseError && err.code === "23505") {  // unique_violation
+    throw new UserAlreadyExistsError(`duplicate user id: ${user.id}`, { cause: err });
   }
+  throw err;
 }
 ```
 
-`catch (err: unknown)` (TS 4.4+ default; the old `any` was a type hole) and
-type-narrow with `instanceof` before reading properties — `err.code` on an
-unknown is a compile error.
+- **`catch (err: unknown)`** (TS 4.4+ default) — the older `any` made catch blocks a type hole.
+- **Narrow with `instanceof` before reading properties.**
 
-**Result type for expected failures** the caller branches on (e.g. "not found"
-in a search flow) — throwing stays for genuinely exceptional conditions:
+### Result type for expected failures
+
+Throw for genuinely exceptional conditions. For expected failures the caller branches on, prefer a Result:
 
 ```ts
-type Result<T, E = Error> =
-  | { ok: true; value: T }
-  | { ok: false; error: E };
-
-async function findUser(id: string): Promise<Result<User, UserNotFoundError>> {
-  const user = await repo.get(id);
-  return user
-    ? { ok: true, value: user }
-    : { ok: false, error: new UserNotFoundError(id) };
-}
+type Result<T, E = Error> = { ok: true; value: T } | { ok: false; error: E };
 ```
 
-Forces the caller to handle both arms; cost is more verbose call sites. Use
-where branching on the error is the norm.
+Forces handling both arms; costs verbosity. Use where branching on the error is the norm.
 
-## Constants and configuration
+### `try` / `catch` / `finally` — not `try` / `finally`
 
-Module constants in `UPPER_SNAKE`. Validate config at startup through one
-schema; never read `process.env` outside `config/`:
+Same trap as Python and Go's bare `defer`: cleanup runs, failure invisible — raw library error to the caller, logs missing `errorName` / `cause` / correlation ids. Add the catch that observes, maps to a domain error, then propagates; cleanup stays in `finally`.
+
+- **`try {} finally {}` alone is a smell** — "I want cleanup but don't care about the failure" is almost never true. The pattern fits only when the caller genuinely logs and re-throws, and even there an explicit `catch` makes the intent visible.
+- **Fallible `finally` cleanup**: wrap each fallible call in its own nested try/catch and log. A throwing `finally` masks the primary exception.
+- **`AbortSignal` cleanup belongs in `finally`** — abort the controller regardless of outcome; leaked controllers leak the underlying fetch/timer.
+- **`using` declarations (TS 5.2+) replace try/finally for disposables:** `using lock = await acquireLock(user.id);` — `[Symbol.dispose]()` runs on scope exit, success or throw. Prefer when a `Disposable` exists.
+
+## Validation at boundaries — Zod (or valibot / arktype)
+
+TypeScript's Pydantic. `tsc` checks edit time; Zod checks runtime payloads. Untrusted inputs (HTTP body, queue message, webhook, LLM tool args, `JSON.parse` of anything) get a schema at the edge.
 
 ```ts
-// src/config/index.ts
-import { z } from "zod";
+export const CreateUserRequest = z.object({
+  email: z.string().email(),
+  displayName: z.string().min(1).max(80),
+  age: z.number().int().gte(13).lte(130),
+  referralCode: z.string().regex(/^[A-Z0-9]{6,12}$/).optional(),
+}).strict();   // rejects unknown keys — Pydantic's extra="forbid"
 
-export const DEFAULT_HTTP_TIMEOUT_MS = 5_000;
-export const DEFAULT_MAX_RETRY_ATTEMPTS = 3;
-export const DEFAULT_CIRCUIT_BREAKER_OPEN_DURATION_MS = 30_000;
+export type CreateUserRequest = z.infer<typeof CreateUserRequest>;
+```
 
+Discipline:
+
+- **Parse, don't validate.** Once you hold a `CreateUserRequest`, stop re-checking shape.
+- **Narrow types in the schema:** `.email()`, `.url()`, `.uuid()`, `z.coerce.date()`, `.ip()`. A bare `z.string()` for a URL is half the job.
+- **`.strict()` on inbound surfaces** — silent caller-typo → loud 400.
+- **`z.discriminatedUnion("type", [...])`** for tagged unions; narrows perfectly in `switch`.
+- **`.refine(...)` for cross-field rules** — don't smear across the handler.
+- **Cache the schema at module scope** — defined inside a handler it re-compiles per request, flamegraph-visible.
+- **`safeParse` over `parse` at the boundary** — returns a discriminated union you handle explicitly.
+- **Output schemas too:** `Response.parse(unknownExternalReply)` turns a `fetch()` into a typed call.
+- `valibot` / `arktype`: smaller bundle, similar API. One per repo.
+
+## Configuration — env validation via Zod (or `envalid` / `t3-env`)
+
+pydantic-settings parallel. Validate `process.env` once at startup; never read it outside the config module.
+
+```ts
 const ConfigSchema = z.object({
-  DATABASE_URL: z.string().url(),
-  REDIS_URL: z.string().url(),
-  HTTP_TIMEOUT_MS: z.coerce.number().int().positive()
-    .default(DEFAULT_HTTP_TIMEOUT_MS),
-  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
-});
+  CLAW_DATABASE_URL: z.string().url(),                     // required — fail boot
+  CLAW_REDIS_URL: z.string().url(),
+  CLAW_API_KEY: z.string().min(20),                        // secret — never log
+  CLAW_HTTP_TIMEOUT_MS: z.coerce.number().int().positive().default(5_000),
+  CLAW_DB_POOL_MAX: z.coerce.number().int().gte(1).lte(200).default(20),
+  CLAW_MAX_RETRY_ATTEMPTS: z.coerce.number().int().gte(1).lte(10).default(3),
+  CLAW_LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  CLAW_ENVIRONMENT: z.enum(["dev", "staging", "prod"]),
+}).strict();
 
-export type Config = z.infer<typeof ConfigSchema>;
-
+let cached: Config | undefined;
 export function loadConfig(): Config {
+  if (cached) return cached;
   const parsed = ConfigSchema.safeParse(process.env);
-  if (!parsed.success) {
-    // Fail fast at startup — never run with an invalid config.
-    throw new Error(`invalid config: ${parsed.error.message}`);
-  }
-  return parsed.data;
+  if (!parsed.success) throw new Error(`invalid config: ${parsed.error.message}`);  // fail fast
+  cached = Object.freeze(parsed.data);
+  return cached;
 }
 ```
 
-Zod (or `valibot` / `arktype`) at the boundary buys runtime validation *and* the
-inferred TS type. `process.env` is always `string | undefined` — don't trust it
-to match your type.
+Discipline:
+
+- **One `ConfigSchema` per process**; sub-services `.extend({...})`.
+- **Service prefix (`CLAW_`)** — otherwise sibling env vars leak in.
+- **`.strict()`** — a `CLAW_DATABASE_URLL` typo fails boot loudly instead of silently defaulting.
+- **`z.coerce.number()`** — `process.env` is `string | undefined`; without coercion arithmetic silently concatenates.
+- **`Object.freeze`** the cached config; **module-level cache** (per-call loading burns request-path CPU).
+- **No `process.env` outside this module** — positive form of the SKILL.md fingerprint.
+- Richer needs: `envalid` (pre-built `port()`, `host()`, `bool()` validators); `@t3-oss/env-core` (client/server var split — leaking server env into a Next.js bundle is a security bug).
+- Non-env constants stay as `UPPER_SNAKE` `const` exports — don't double-declare on the schema.
 
 ## Connection pools
 
-Instantiate once at startup and inject; never `new Pool()` per request.
-
-**Postgres (`pg` or `postgres.js`):**
+Instantiate once at startup and inject. Never `new Pool()` per request.
 
 ```ts
-import { Pool } from "pg";
-
-export const DEFAULT_DB_POOL_MAX = 20;
-export const DEFAULT_DB_POOL_IDLE_TIMEOUT_MS = 30_000;
-export const DEFAULT_DB_CONN_TIMEOUT_MS = 2_000;
-export const DEFAULT_DB_STATEMENT_TIMEOUT_MS = 5_000;
-
+// Postgres (pg) — statement_timeout is a session setting so the SERVER
+// kills runaway queries; pg has no per-query timeout of its own.
 export const pgPool = new Pool({
   connectionString: config.DATABASE_URL,
-  max: DEFAULT_DB_POOL_MAX,
-  idleTimeoutMillis: DEFAULT_DB_POOL_IDLE_TIMEOUT_MS,
-  connectionTimeoutMillis: DEFAULT_DB_CONN_TIMEOUT_MS,
-  statement_timeout: DEFAULT_DB_STATEMENT_TIMEOUT_MS,
+  max: 20, idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 2_000, statement_timeout: 5_000,
 });
-```
 
-`pg` has no per-query timeout of its own — `statement_timeout` is sent to
-Postgres as a session setting so the server kills runaway queries.
-
-**HTTP** — `undici` (Node's built-in client, under `fetch`); a shared `Agent`
-manages the pool:
-
-```ts
-import { Agent, request } from "undici";
-
+// HTTP — undici Agent (the engine under fetch). Phase timeouts on the
+// Agent as backstop; AbortSignal.timeout for total wall-clock per call.
 export const httpAgent = new Agent({
-  connect: { timeout: DEFAULT_HTTP_CONNECT_TIMEOUT_MS },
-  bodyTimeout: DEFAULT_HTTP_READ_TIMEOUT_MS,
-  headersTimeout: DEFAULT_HTTP_READ_TIMEOUT_MS,
-  pipelining: 1,
-  connections: 50,    // per-origin
+  connect: { timeout: 2_000 }, bodyTimeout: 5_000, headersTimeout: 5_000,
+  pipelining: 1, connections: 50,   // per-origin
 });
-
 const { statusCode, body } = await request(url, {
-  dispatcher: httpAgent,
-  signal: AbortSignal.timeout(DEFAULT_HTTP_TOTAL_TIMEOUT_MS),
+  dispatcher: httpAgent, signal: AbortSignal.timeout(10_000),
 });
-```
 
-`AbortSignal.timeout` caps total wall-clock; the Agent timeouts cap individual
-phases (connect, headers, body). Use both. Avoid `axios` in new code — `fetch` /
-`undici.request` covers every real use case with no third-party dep and proper
-streaming.
-
-**Redis (`ioredis`):**
-
-```ts
-import Redis from "ioredis";
-
+// Redis (ioredis) — commandTimeout is critical: without it a stuck
+// connection holds a promise forever. lazyConnect supports the
+// "no startup health checks" rule.
 export const redisClient = new Redis(config.REDIS_URL, {
-  maxRetriesPerRequest: 3,
-  enableReadyCheck: true,
-  lazyConnect: true,
-  connectTimeout: 2_000,
-  commandTimeout: 500,
+  maxRetriesPerRequest: 3, enableReadyCheck: true, lazyConnect: true,
+  connectTimeout: 2_000, commandTimeout: 500,
 });
 ```
 
-`commandTimeout` is critical (a stuck connection holds a promise forever);
-`lazyConnect` defers connection to the first command, supporting "no startup
-health checks."
+Avoid `axios` in new code — `fetch` / `undici.request` covers every real use case with no third-party dep and proper streaming.
 
 ## Memory and allocation
 
-V8 is more forgiving than CPython but rewards the same discipline:
+- **Stream large bodies.** `response.body` is a `ReadableStream` — pipe to a parser; don't `await response.text()` for 100 MB.
+- **Avoid spread on large arrays.** `[...a, ...b]` allocates; hot paths use `a.push(...b)` or `Array.from` with capacity.
+- **Reuse buffers.** Accumulate `Buffer[]`, `Buffer.concat(parts, totalLength)` — pass the total to avoid a second scan.
+- **`Map` over `Object`** for high-cardinality dynamic keys — V8 shape transitions slow every access on objects; `Map` is built for it.
+- **Bounded caches.** `lru-cache` with `max:` over a bare `Map` for anything risking unbounded growth.
+- **Don't close over large objects.** A handler capturing `req` in a long-lived promise pins the whole request graph. Extract fields before awaiting.
+- **`WeakRef` / `WeakMap`** for identity-keyed caches that shouldn't block GC.
 
-- **Stream large bodies.** `response.body` is a `ReadableStream` — pipe to a
-  parser; don't `await response.text()` on a 100 MB response.
-- **Avoid `array.spread` on large arrays.** `[...a, ...b]` allocates; hot paths
-  → `a.push(...b)` (in-place) or `Array.from(iter)` with a capacity hint.
-- **Reuse buffers.** Accumulate `Buffer[]` and `Buffer.concat(parts,
-  totalLength)` at the end (pass the total length to avoid a second scan).
-- **`Map` over `Object`** for high-cardinality dynamic keys — V8 transitions
-  object shapes as keys grow, slowing every access.
-- **Bounded caches.** `lru-cache` (set `max:`) over `new Map()` for
-  request-scoped caches that risk unbounded growth.
-- **Avoid closing over large objects.** A handler capturing `req` in a
-  long-lived promise pins the whole request graph — extract the fields you need
-  before awaiting.
-- **WeakRef / WeakMap** for identity-keyed caches that shouldn't prevent GC.
+### V8 hidden classes and monomorphism
+
+V8's JIT relies on objects sharing a hidden class ("shape"). Monomorphic code is fast; many shapes degrade to the slow generic path. On hot paths:
+
+- **Initialise all fields in the constructor, same order, same types** — even as `null`. A conditionally-added field creates a divergent shape:
+
+  ```ts
+  // GOOD — tag is always present; null is a shape member, not a missing field.
+  class Event {
+    constructor(public id: string, public ts: number, public tag: string | null = null) {}
+  }
+  ```
+
+- **Never `delete obj.field`** on hot-path objects — deopts to dictionary mode permanently. Assign `null`/`undefined` or drop the reference.
+- **Avoid heterogeneous arrays** — `[1, "two", {}]` triggers slow elements kind; `[1, 2, 3]` stays fast SMI.
+- **Don't mutate prototype chains at runtime** (`Object.setPrototypeOf`, patching `prototype.method` after instances exist) — every instance goes mega-morphic.
+
+### Heap sizing and GC tuning
+
+V8's default heap limit (1.4 GB on Node ≤16, 4 GB recent) is much smaller than typical container memory. Two failure modes: `heap out of memory` long before the container OOMs (limit too low — set `--max-old-space-size=<MB>` to ~75% of container memory); GC pauses swamping p99 (raise `--max-semi-space-size=<MB>`, default 16 MB, on allocation-heavy workloads to reduce Scavenge frequency).
+
+```bash
+NODE_OPTIONS="--max-old-space-size=3072 --max-semi-space-size=64" node ./main.js
+```
+
+`--expose-gc` + manual `gc()` in production is a footgun (full stop-the-world) — benchmarks only. Profile with `--inspect` + DevTools Memory tab or `clinic heapprofiler`; don't tune flags without numbers.
+
+### Closure-retention bugs
+
+The most common JS leak: a callback/promise/listener captures the enclosing scope and outlives the data:
+
+```ts
+// BAD — largeBuffer pinned until the timer fires (or forever if shared).
+setInterval(() => metrics.gauge("buffer_bytes", largeBuffer.length), 1_000);
+
+// GOOD — extract the primitive.
+const size = largeBuffer.length;
+setInterval(() => metrics.gauge("buffer_bytes", size), 1_000);
+```
+
+Same rule for promise chains, event-emitter listeners, async iterators.
 
 ## Concurrency
 
-Node is single-threaded for JS but I/O-concurrent — the mental model is Python
-`asyncio`, not Go goroutines.
+Node is single-threaded for JS, I/O-concurrent. The mental model is `asyncio`, not goroutines.
 
-**Bound your fanout:**
+### Bound your fanout
 
 ```ts
-// BAD — N concurrent fetches, no cap
+// BAD — N concurrent fetches, no cap. The most common
+// "production OOM after deploy" shape in Node.
 const results = await Promise.all(urls.map(fetchOne));
 
 // GOOD — bounded with p-limit (or pMap)
-import pLimit from "p-limit";
 const limit = pLimit(8);
-const results = await Promise.all(
-  urls.map((u) => limit(() => fetchOne(u))),
-);
+const results = await Promise.all(urls.map((u) => limit(() => fetchOne(u))));
 ```
 
-Unbounded `Promise.all` is the most common "production OOM after deploy" shape
-in Node.
+### Always pass a signal
 
-**Always pass a signal** tied to request lifecycle / deadline / parent context:
+Every I/O call accepts an `AbortSignal`. Tie it to the request lifecycle, deadline, or parent context; `AbortSignal.any` (Node 20+) is Go's `context.WithCancel` composition:
 
 ```ts
-async function handleRequest(req: FastifyRequest): Promise<Response> {
-  const signal = AbortSignal.any([
-    AbortSignal.timeout(REQUEST_DEADLINE_MS),
-    req.raw.signal,  // client disconnect cancels too
-  ]);
-  return doWork(signal);
-}
-
-async function doWork(signal: AbortSignal): Promise<Response> {
-  const res = await fetch(url, { signal });
-  // signal also pipes through to your own async work:
-  for await (const chunk of res.body!) {
-    signal.throwIfAborted();
-    // ...
-  }
+const signal = AbortSignal.any([
+  AbortSignal.timeout(REQUEST_DEADLINE_MS),
+  req.raw.signal,           // client disconnect cancels too
+]);
+const res = await fetch(url, { signal });
+for await (const chunk of res.body!) {
+  signal.throwIfAborted();
+  // ...
 }
 ```
 
-`AbortSignal.any` (Node 20+) is the equivalent of Go's `context.WithCancel`
-composition.
+### Promise gotchas
 
-**Promise gotchas:**
+- A floating promise (not awaited, no `.catch`) becomes an unhandled rejection. `--unhandled-rejections=strict` + `@typescript-eslint/no-floating-promises`.
+- `Promise.all` rejects on the first failure; siblings keep running. `Promise.allSettled` to collect both.
+- `for await ... of` over manual `(await stream.next()).value` loops.
 
-- A floating promise (returned, not awaited, no `.catch`) becomes an unhandled
-  rejection. Enable `--unhandled-rejections=strict` and
-  `@typescript-eslint/no-floating-promises`.
-- `Promise.all` rejects on first failure; siblings keep running. Use
-  `Promise.allSettled` to collect both.
-- `for await ... of` over `(await stream.next()).value` loops — shorter and
-  safer.
+### Workers
 
-**Workers:** `worker_threads` for CPU-bound; `child_process` for IPC/forking.
-Don't use `cluster` for HTTP load — modern load balancers do it better.
+CPU-bound → `worker_threads`. IPC/forking → `child_process`. Don't lean on `cluster` for HTTP load — modern load balancers do it better.
 
 ## Streaming over regex
 
-Same as Python/Go — compile once if used:
-
-```ts
-const ID_PATTERN = /id=(\w+)/;   // module-level; compiled once
-
-function* extractIds(lines: Iterable<string>): Iterable<string> {
-  for (const line of lines) {
-    const match = ID_PATTERN.exec(line);
-    if (match) yield match[1];
-  }
-}
-```
-
-Hot paths / large inputs → `indexOf`-style streaming (same shape as Python's
-`line.find("id=")`). **Never regex HTML** — use `parse5` / `node-html-parser`
-(small) or `cheerio`; regex against HTML is the fastest path to a security bug.
-JSON of unknown shape → `JSON.parse` + Zod, not regex.
+Compile once at module level (`const ID_PATTERN = /id=(\w+)/`). Hot paths over large inputs: `indexOf`-style streaming, same shape as Python's `line.find("id=")`. **Never regex HTML** — `parse5` / `node-html-parser` (small) or `cheerio` (jQuery-style); regex-against-HTML is the fastest path to a security bug. JSON of unknown shape: `JSON.parse` + Zod, not regex.
 
 ## Database batching
 
-**`pg` — multi-row insert via `unnest`** (one round-trip for N rows; very large
-→ `pg-copy-streams` / `COPY`, an order of magnitude faster):
-
 ```ts
+// Multi-row insert via unnest — one round-trip for N rows.
 await pgPool.query(
   `INSERT INTO users (id, email, created_at)
    SELECT * FROM unnest($1::text[], $2::text[], $3::timestamptz[])`,
-  [
-    users.map((u) => u.id),
-    users.map((u) => u.email),
-    users.map((u) => u.createdAt),
-  ],
+  [users.map((u) => u.id), users.map((u) => u.email), users.map((u) => u.createdAt)],
 );
-```
+// Very large inserts: pg-copy-streams (Postgres COPY) — order of magnitude faster.
 
-**`pg` — multi-key read** (one round-trip for N keys vs N for the naive
-per-id loop):
+// Multi-key read — one round-trip for N keys (vs N per-id queries).
+const rows = await pgPool.query("SELECT * FROM users WHERE id = ANY($1::text[])", [ids]);
 
-```ts
-const rows = await pgPool.query(
-  "SELECT * FROM users WHERE id = ANY($1::text[])",
-  [ids],
-);
-```
-
-**Redis pipelining** (one round-trip for N commands; `multi()` adds
-transactional semantics — use only when you need atomicity):
-
-```ts
+// Redis pipelining — one round-trip for N commands. multi() only when
+// you need atomicity.
 const pipeline = redisClient.pipeline();
 for (const key of keys) pipeline.get(key);
 const results = await pipeline.exec();
@@ -410,170 +334,157 @@ const results = await pipeline.exec();
 
 ## HTTP clients (caller side)
 
-`fetch` is built into Node 18+ — prefer it for new code:
+`fetch` is built into Node 18+. Common mistakes:
 
-```ts
-const response = await fetch(url, {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify(payload),
-  signal: AbortSignal.timeout(DEFAULT_HTTP_TOTAL_TIMEOUT_MS),
-});
-
-if (!response.ok) {
-  // 4xx and 5xx do NOT throw — you must check ok / status yourself.
-  throw new HttpError(response.status, await response.text());
-}
-
-const body = await response.json();
-```
-
-Common mistakes: not checking `response.ok` (`fetch` throws only on network
-errors, not HTTP errors — axios hid this, but the underlying API is what modern
-Node uses); forgetting the timeout (`fetch` has none — always pass a signal);
-reading the body twice (`.text()` then `.json()` throws — bodies stream once;
-buffer with `.text()` and parse manually if you need both); logging URLs with
-credentials (query-string tokens end up in every proxy log).
+- **Not checking `response.ok`.** `fetch` throws only on network errors, never HTTP errors. `if (!response.ok) throw new HttpError(response.status, await response.text());`
+- **No timeout.** `fetch` has no default — always pass `signal: AbortSignal.timeout(...)`.
+- **Reading the body twice.** Bodies stream once; `.text()` then `.json()` throws. Buffer with `.text()` and parse manually if you need both.
+- **Logging URLs with credentials.** Query-string tokens end up in every proxy log.
 
 ## Testing
 
-**vitest** for new projects (Jest-compatible API, faster, native ESM); the
-patterns apply unchanged to existing Jest setups.
+**vitest** for new projects (Jest-compatible, faster, native ESM); patterns apply unchanged to existing Jest.
 
 ```ts
-// src/domain/user-service.test.ts
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { UserService } from "./user-service.js";
-import type { UserRepository } from "./user-service.js";
-
 describe("UserService.get", () => {
   let repo: UserRepository;
-  let service: UserService;
-
   beforeEach(() => {
-    repo = {
-      get: vi.fn(),
-      save: vi.fn(),
-    };
-    service = new UserService(repo);
+    repo = { get: vi.fn(), save: vi.fn() };   // inject a fake of the interface
   });
 
   it("returns user when found", async () => {
     vi.mocked(repo.get).mockResolvedValue({ id: "u1", email: "a@b.c" });
-    expect(await service.get("u1")).toEqual({ id: "u1", email: "a@b.c" });
+    expect(await new UserService(repo).get("u1")).toEqual({ id: "u1", email: "a@b.c" });
   });
-
   it("throws UserNotFoundError when missing", async () => {
     vi.mocked(repo.get).mockResolvedValue(null);
-    await expect(service.get("u_missing")).rejects.toBeInstanceOf(
-      UserNotFoundError,
-    );
-  });
-
-  it("wraps repository error in service error", async () => {
-    vi.mocked(repo.get).mockRejectedValue(new Error("connection refused"));
-    await expect(service.get("u1")).rejects.toBeInstanceOf(UserServiceError);
+    await expect(new UserService(repo).get("u_x")).rejects.toBeInstanceOf(UserNotFoundError);
   });
 });
 ```
 
-- **Table-driven with `it.each`** when the shape repeats:
+- **Table-driven via `it.each`** when the shape repeats.
+- **Fake timers** for `setTimeout` / `Date.now`: `vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01")); ... vi.useRealTimers();`
+- **`testcontainers-node`** for integration against real Postgres / Redis / NATS.
+- **`supertest`** (or fastify `.inject`) for HTTP-level tests — exercises routing, middleware, validation.
+- **Never `mockModule` deep dependencies — inject them.** A test patching `node_modules/pg` global state breaks under parallelism.
 
-  ```ts
-  it.each([
-    ["", false],
-    ["a", true],
-    ["a@b", false],
-    ["a@b.c", true],
-  ])("isValidEmail(%s) === %s", (input, expected) => {
-    expect(isValidEmail(input)).toBe(expected);
-  });
-  ```
+Coverage: `vitest run --coverage --coverage.reporter=text-summary`.
 
-- **Fake timers** for `setTimeout` / `Date.now`:
+## Comment & TSDoc format
 
-  ```ts
-  vi.useFakeTimers();
-  vi.setSystemTime(new Date("2026-01-01"));
-  // ... assert ...
-  vi.useRealTimers();
-  ```
+### TSDoc on exported symbols
 
-- **`testcontainers-node`** for integration vs real Postgres/Redis/NATS.
-- **`supertest`** (or fastify `.inject`) for HTTP-level tests — exercises
-  routing, middleware, validation.
-- **Never `mockModule` deep dependencies** — inject them. Patching
-  `node_modules/pg` global state breaks under parallelism.
-
-```bash
-vitest run --coverage --coverage.reporter=text-summary
+```ts
+/**
+ * Looks up a user by id.
+ *
+ * @param userId - Caller-side ULID; must be exactly 26 characters.
+ * @returns The user row, or `null` if not found.
+ * @throws {@link UserRepositoryError} on underlying DB failures.
+ */
+export async function fetchUser(userId: string): Promise<User | null> {
 ```
 
-## Tooling
+- `/** ... */` doc comments — IDEs surface on hover; `api-extractor` / `typedoc` parse them.
+- First line: single-sentence summary, blank line, body (PEP 257 shape).
+- Standard tags: `@param`, `@returns`, `@throws`, `@example`. Don't repeat the type in `@param` — the signature has it; document *semantic* contracts ("must be a ULID").
+- `{@link Symbol}` for cross-references; `@deprecated` is the canonical tag (`import/no-deprecated` flags consumers).
 
-- **TypeScript** strict mode; `tsc --noEmit` is the CI type check, the build can
-  use `esbuild` / `swc` / `tsup` for speed.
-- **eslint + `@typescript-eslint`** `recommended-type-checked` preset; add the
-  import-order and no-floating-promises rules.
-- **Prettier** (run by the lint step) — or **biome** for one tool doing lint +
-  format.
-- **npm/pnpm audit / snyk** for dependency scanning in CI.
+### Inline comments
 
-`scripts/lint.sh` covers TS alongside Python and Go — `tsc --noEmit` + `eslint`
-+ `prettier --check`.
+Why, not what. One sentence per `//`.
+
+- **`// eslint-disable-next-line <rule> -- <reason>`** — bare disable is a smell; `eslint-comments/require-description` enforces the `--` reason.
+- **`// @ts-expect-error <reason>` over `// @ts-ignore`** — `expect-error` fails when the error disappears; `ignore` rots.
+- **`// TODO(@author, YYYY-MM-DD): description`** — bare TODO rots.
+- **No commented-out code in committed files.**
+
+## Tooling — TypeScript / ESLint / Prettier
+
+- **`tsc --noEmit` in CI** as the type check; build via `esbuild`/`swc`/`tsup` for speed. `tsconfig.json` essentials:
+
+  ```jsonc
+  {
+    "compilerOptions": {
+      "strict": true,
+      "noUncheckedIndexedAccess": true,     // arr[i] is T | undefined
+      "noImplicitOverride": true,
+      "noFallthroughCasesInSwitch": true,
+      "exactOptionalPropertyTypes": true,
+      "useUnknownInCatchVariables": true,
+      "isolatedModules": true,
+      "skipLibCheck": true,                 // pragmatic: skip @types/* checks
+      "moduleResolution": "bundler",
+      "target": "ES2022"
+    }
+  }
+  ```
+
+- **ESLint** with `@typescript-eslint`; `recommended-type-checked` is the floor. Always-on rules:
+
+  ```jsonc
+  {
+    "extends": [
+      "eslint:recommended",
+      "plugin:@typescript-eslint/recommended-type-checked",
+      "plugin:@typescript-eslint/stylistic-type-checked",
+      "plugin:import/recommended", "plugin:import/typescript",
+      "prettier"
+    ],
+    "rules": {
+      "@typescript-eslint/no-floating-promises": "error",   // catches the #1 async bug class
+      "@typescript-eslint/no-misused-promises": "error",
+      "@typescript-eslint/no-explicit-any": "error",
+      "@typescript-eslint/await-thenable": "error",
+      "@typescript-eslint/no-unsafe-assignment": "error",
+      "@typescript-eslint/consistent-type-imports": "error",
+      "@typescript-eslint/no-non-null-assertion": "error",
+      "@typescript-eslint/switch-exhaustiveness-check": "error",
+      "import/order": ["error", { "newlines-between": "always" }],
+      "import/no-cycle": "error",
+      "eslint-comments/require-description": ["error", { "ignore": [] }]
+    }
+  }
+  ```
+
+- **Prettier** (or biome) for formatting; `eslint-config-prettier` disables ESLint's stylistic rules so they don't fight.
+- **npm/pnpm audit, snyk, or `osv-scanner`** in CI.
+
+`scripts/lint.sh` covers TS: `tsc --noEmit` + `eslint --max-warnings 0` + `prettier --check`.
 
 ## Browser / React additions
 
-Most of the above applies; the deltas worth calling out:
+### Rendering safety
 
-**React rendering safety.** Never `dangerouslySetInnerHTML` with user content;
-if you truly need user-supplied HTML, sanitise with `DOMPurify` first and
-document why HTML was required. URLs in `href`/`src` — validate the scheme
-(`javascript:` and `data:` are the SSRF-adjacent risk):
+- **Never `dangerouslySetInnerHTML` with user-controlled content.** If user HTML is truly required, sanitise with `DOMPurify` and document why.
+- **Validate URL schemes in `href`/`src`** — `javascript:` and `data:` pass `encodeURIComponent`: `const safeHref = (url: string) => /^https?:/i.test(url) ? url : "#";`
 
-```ts
-const safeHref = (url: string) =>
-  /^https?:/i.test(url) ? url : "#";
-```
+### Effects and cleanup
 
-**Effects and cleanup.** Every subscribing `useEffect` (listener, interval,
-fetch) returns a cleanup — forgetting it leaks across re-mounts and hot-reloads.
-Pass an `AbortController` signal to in-effect `fetch`, abort in cleanup:
+- Every subscribing `useEffect` (listener, interval, fetch) returns a cleanup — forgetting leaks across re-mounts and hot-reloads.
+- Pass an `AbortController` signal to in-effect `fetch`; abort in the cleanup; swallow only `AbortError`.
 
-```ts
-useEffect(() => {
-  const controller = new AbortController();
-  fetch(url, { signal: controller.signal })
-    .then((r) => r.json())
-    .then(setData)
-    .catch((err) => {
-      if (err.name !== "AbortError") setError(err);
-    });
-  return () => controller.abort();
-}, [url]);
-```
+### State
 
-**State.** `useState` for local, `useReducer` for non-trivial transitions,
-Context for cross-cutting (auth, theme). Don't reach for `zustand`/`redux` until
-two unrelated subtrees share state — that's the signal. Lift state only to the
-lowest common ancestor that needs it.
+- `useState` local; `useReducer` for non-trivial transitions; Context for cross-cutting (auth, theme). No global state library (`zustand`, `redux`) until two unrelated subtrees share state — that's the signal.
+- Lift state only to the lowest common ancestor that needs it.
 
-**Memoization.** `React.memo` / `useMemo` / `useCallback` only on a measured
-problem — premature memoization is its own perf bug (dependency arrays add churn,
-the comparison isn't free). The cheapest win is usually fixing an unnecessary
-parent re-render, not memoizing the child.
+### Memoization
 
-**Server components / SSR.** Code using `window` / `document` / `localStorage`
-must be SSR-guarded (`typeof window !== "undefined"`) or in a client component
-(`"use client"`). Don't import secrets-aware modules into client components — the
-bundler ships them to the browser.
+- `React.memo` / `useMemo` / `useCallback` only on a measured problem — dependency arrays add churn and comparison isn't free. The cheapest win is usually fixing an unnecessary parent re-render, not memoizing the child.
 
-**Accessibility.** Interactive elements are real `<button>` / `<a>`, not
-`<div onClick>` (screen readers and keyboard users depend on it); `aria-*` is no
-substitute for the right element; form fields have an associated `<label>`.
+### Server components / SSR
 
-**Browser perf.** Defer non-critical JS (`<script type="module" defer>` /
-Next.js `<Script strategy="lazyOnload">`). Avoid layout thrash — group reads
-(`getBoundingClientRect`) before writes (`style.height = ...`); mixing them in a
-loop forces a relayout per pair. Images: `next/image` (or equivalent) with
-explicit dimensions to reserve space and prevent CLS.
+- Guard `window` / `document` / `localStorage` for SSR (`typeof window !== "undefined"`) or move to a client component (`"use client"`).
+- Don't import secrets-aware modules into client components — the bundler ships them to the browser.
+
+### Accessibility
+
+- Interactive elements are real `<button>` / `<a>`, never `<div onClick>`. `aria-*` is not a substitute for the right element. Form fields have a `<label>`.
+
+### Browser perf
+
+- Defer non-critical JS (`<script type="module" defer>`, Next `<Script strategy="lazyOnload">`).
+- Avoid layout thrash — group reads (`getBoundingClientRect`) before writes (`style.height = ...`); mixing in a loop forces a relayout per pair.
+- Images: `next/image` (or equivalent) with explicit dimensions to prevent CLS.
