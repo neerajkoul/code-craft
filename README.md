@@ -12,7 +12,13 @@ running the verification command that proves it.
 
 It is the standard I apply to my own work, written down so that an assistant
 applies it consistently — and so the wrong conversations stop happening on a
-team.
+team. The 2.1.0 release adds the per-language details that make this concrete:
+boundary validation via Pydantic / `go-playground/validator` / Zod; env
+configuration through `pydantic-settings` / `caarlos0/env` / Zod-on-`process.env`;
+docstring + inline-comment conventions (PEP 257 / godoc / TSDoc); the
+`try` / `except` / `finally` discipline (and its Go `defer` + TS `using`
+parallels); and a memory-allocator deep-dive per language (CPython arenas,
+Go escape analysis + `GOMEMLIMIT`, V8 hidden classes + heap sizing).
 
 ---
 
@@ -69,7 +75,7 @@ code-craft/
 | `resilience.md` | The four non-negotiables for any external call, with sizing math and tuning numbers. |
 | `security.md` | Five-minute threat model, the paranoia checklist, `pip-audit`/`govulncheck` workflow. |
 | `performance.md` | The five-step measurement loop, per-language profilers, percentile discipline, false economies, system-level levers. |
-| `python.md` / `golang.md` / `typescript.md` | Idiomatic, well-commented reference code per language. TypeScript covers server-side Node plus a Browser/React section. |
+| `python.md` / `golang.md` / `typescript.md` | Idiomatic, well-commented reference code per language. Each ships parallel sections for **boundary validation** (Pydantic / `go-playground/validator` / Zod), **env-typed configuration** (`pydantic-settings` / `caarlos0/env` / Zod-on-`process.env`), **docstring + inline-comment format** (PEP 257 / godoc / TSDoc), **lint + format tooling** (Ruff / golangci-lint / ESLint + Prettier), **memory / allocator deep-dives** (CPython arenas + worker recycling; Go escape analysis + `GOMEMLIMIT`; V8 hidden classes + heap sizing), and the **`try` / `except` / `finally`** discipline (no `try/finally` alone; `defer` + named return + error wrap; `try / catch / finally` + `using` declarations). TypeScript also covers server-side Node plus a Browser/React section. |
 
 ---
 
@@ -167,9 +173,13 @@ The bundled scripts auto-detect the stack from the project root
 ## Token footprint
 
 Because the references load on every code task, the skill is kept lean. The
-current corpus is roughly **30k tokens** of Markdown, after a compression pass
-that removed internal redundancy while preserving every concrete rule and all
-reference code verbatim. See `CHANGELOG.md` for the before/after.
+current corpus is roughly **32k tokens** of Markdown — the 2.0.0 compression
+pass removed internal redundancy without dropping rules, and the 2.1.0
+additions (Pydantic / Zod / validator boundary schemas, env-typed settings,
+docstring + lint conventions, deep memory-allocator coverage,
+`try`/`except`/`finally` discipline) earn their bytes against new actionable
+content rather than restating existing rules. See `CHANGELOG.md` for the
+delta-by-delta history.
 
 ---
 

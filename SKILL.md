@@ -9,7 +9,7 @@ Engineering principles for production-grade Python, Go, and TypeScript. Simplici
 
 ## How to use this skill
 
-**Mandatory first action — load the references.** Before producing ANY code, diff, review comment, or design opinion, read the cross-cutting references. They are required for every code task, not "open when relevant." Skipping them = task incomplete.
+**Mandatory first action — load the cross-cutting references.** Before producing ANY code, diff, review comment, or design opinion, read these. They are required for every code task, not "open when relevant." Skipping them = task incomplete.
 
 ```
 references/engagement.md   — how to engage with the task before coding
@@ -27,7 +27,33 @@ references/golang.md       — any Go file
 references/typescript.md   — any TypeScript / JavaScript / TSX file
 ```
 
-Skip a language reference only if the task touches none of these languages. References and this file are **one prompt** — a rule in a reference binds as hard as a rule here.
+**Topic references — open on demand when the task touches the topic.** Same binding force as the rest of this skill once loaded.
+
+```
+references/distributed.md     — process boundaries: sagas, CDC, idempotency, fencing tokens, ordering, partial failure
+references/concurrency.md     — channels vs locks, structured concurrency, backpressure, cancellation propagation
+references/api-contracts.md   — REST/gRPC/protobuf versioning, breaking changes, OpenAPI, contract tests, webhooks
+references/observability.md   — SLO/SLI, error budgets, RED/USE, multi-window burn-rate alerting
+references/incident-response.md — live debugging, mitigation order, blast-radius limits, blameless postmortem
+references/caching.md         — stampede protection (singleflight + XFetch), TTL jitter, invalidation, negative caching
+references/feature-flags.md   — flag types, kill switches, gradual rollout, flag debt, fail-safe defaults
+references/migrations.md      — expand → migrate → contract, online DDL, backfills, rollout compatibility
+```
+
+When to open which (rough mapping — open any that fit):
+
+| Task touches… | Open |
+|---|---|
+| Queue consumer, retry, multi-service workflow, distributed lock, webhook | `distributed.md` |
+| Goroutines / async tasks / channels / locks / worker pools | `concurrency.md` |
+| Public API (REST / gRPC / proto / webhook / SDK) add or change | `api-contracts.md` |
+| SLO design, alerting, dashboards, on-call surface | `observability.md` |
+| On-call / postmortem / rollback design / kill-switch placement | `incident-response.md` |
+| Any cache (in-process LRU, Redis, CDN) | `caching.md` |
+| Any feature flag — new, change, removal | `feature-flags.md` |
+| Any DDL or data backfill on a populated table | `migrations.md` |
+
+Skip a topic reference only if the task doesn't touch it. References and this file are **one prompt** — a rule in a reference binds as hard as a rule here.
 
 **Workflow once loaded:**
 

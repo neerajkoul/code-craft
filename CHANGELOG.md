@@ -5,7 +5,7 @@ based on [Keep a Changelog](https://keepachangelog.com/), and the project
 follows semantic-ish versioning for a prompt artifact (major = behavior change,
 minor = added content, patch = fixes/wording).
 
-## [2.1.0] — 2026-06-11
+## [2.1.0] — 2026-06-12
 
 ### Added
 
@@ -103,6 +103,11 @@ minor = added content, patch = fixes/wording).
 - All additions earn their bytes against new rules and patterns, not
   duplication. The compression discipline from 2.0.0 still applies — every
   new sentence introduces something actionable.
+- Corpus footprint: ~30k → ~32k tokens (≈+7%) covering the new per-language
+  sections. Net growth lives in the language references (`python.md`,
+  `golang.md`, `typescript.md`); `SKILL.md` grew by two anti-pattern
+  fingerprint lines only.
+- `README.md` synced to reflect the new section coverage and footprint.
 
 ## [2.0.0] — 2026-06-11
 
