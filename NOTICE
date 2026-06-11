@@ -1,0 +1,13 @@
+code-craft
+Copyright (c) 2026 Neeraj
+
+This product includes material adapted from:
+
+  multica-ai/andrej-karpathy-skills
+  https://github.com/multica-ai/andrej-karpathy-skills
+  Licensed under the MIT License.
+
+Specifically, references/engagement.md adapts the framing of that project,
+which distills Andrej Karpathy's observations on common LLM coding pitfalls
+(https://x.com/karpathy/status/2015883857489522876). The examples and the
+integration with the rest of this skill are original.
