@@ -54,14 +54,25 @@ code-craft/
 ├── SKILL.md                 # the standard: modes, principles, review checklist,
 │                            #   five dimensions, review-comment style, verification gates
 ├── references/
+│   │  # cross-cutting (always loaded)
 │   ├── engagement.md        # how to engage before coding (adapted from Karpathy's notes)
 │   ├── tdd.md               # the red-green-refactor loop, unit vs integration
 │   ├── resilience.md        # pools, timeouts, circuit breakers, retries, degradation
 │   ├── security.md          # threat modeling, OWASP-style checklist, dependency hygiene
 │   ├── performance.md       # measurement loop, profilers, percentiles, system-level levers
+│   │  # languages (load any in play)
 │   ├── python.md            # idioms: layout, types, exceptions, pools, batching, tooling
 │   ├── golang.md            # idioms: errors, interfaces-at-consumer, sync.Pool, errgroup
-│   └── typescript.md        # idioms: strict types, undici, AbortSignal, vitest, + React
+│   ├── typescript.md        # idioms: strict types, undici, AbortSignal, vitest, + React
+│   │  # topic deep-dives (load on demand)
+│   ├── distributed.md       # CDC over outbox, idempotency, fencing tokens, sagas, ordering
+│   ├── concurrency.md       # structured concurrency, channels vs locks, backpressure, cancellation
+│   ├── api-contracts.md     # versioning, breaking changes, RFC 9745/8594, Pact, webhook signing
+│   ├── observability.md     # SLO/SLI, error budgets, RED/USE, multi-window burn-rate alerting
+│   ├── incident-response.md # mitigation order, blast-radius design, blameless postmortem template
+│   ├── caching.md           # singleflight + XFetch + TTL jitter, invalidation, negative caching
+│   ├── feature-flags.md     # five flag types, kill switches, gradual rollout, flag debt
+│   └── migrations.md        # expand→migrate→contract, online DDL, throttled backfills
 └── scripts/
     ├── lint.sh              # format + lint gate (Python: ruff/mypy, Go: gofmt/golangci-lint)
     └── test.sh              # test + coverage gate (pytest --cov-branch, go test -race)
@@ -76,6 +87,14 @@ code-craft/
 | `security.md` | Five-minute threat model, the paranoia checklist, `pip-audit`/`govulncheck` workflow. |
 | `performance.md` | The five-step measurement loop, per-language profilers, percentile discipline, false economies, system-level levers. |
 | `python.md` / `golang.md` / `typescript.md` | Idiomatic, well-commented reference code per language. Each ships parallel sections for **boundary validation** (Pydantic / `go-playground/validator` / Zod), **env-typed configuration** (`pydantic-settings` / `caarlos0/env` / Zod-on-`process.env`), **docstring + inline-comment format** (PEP 257 / godoc / TSDoc), **lint + format tooling** (Ruff / golangci-lint / ESLint + Prettier), **memory / allocator deep-dives** (CPython arenas + worker recycling; Go escape analysis + `GOMEMLIMIT`; V8 hidden classes + heap sizing), and the **`try` / `except` / `finally`** discipline (no `try/finally` alone; `defer` + named return + error wrap; `try / catch / finally` + `using` declarations). TypeScript also covers server-side Node plus a Browser/React section. |
+| `distributed.md` | Workflow-level reliability: at-least-once delivery, CDC-preferred dual-write fix (with outbox as fallback), idempotency keys + inbox dedup, fencing tokens with storage enforcement, ordering per broker, sagas with idempotent compensations, partial-failure recovery, anti-pattern fingerprints. |
+| `concurrency.md` | Primitive choice (sharding > CAS > channels > mutex), structured concurrency (`asyncio.TaskGroup` / `errgroup` / `AbortController`), cancellation propagation, bounded fanout with semaphores, mutex hygiene, language-specific traps (event-loop blocking, goroutine leaks, `Promise.all` cancellation). |
+| `api-contracts.md` | Breaking-change taxonomy, versioning strategies (path / header / proto), expand-migrate-contract for endpoints, RFC 9745 `Deprecation` + RFC 8594 `Sunset` headers, OpenAPI / `buf breaking` in CI, Pact contract testing, error envelope stability, webhook signing + replay window. |
+| `observability.md` | SLI / SLO / SLA + budget math, four golden signals + RED + USE, Google SRE multi-window multi-burn-rate alerts (four-tier page/ticket), cardinality discipline, dashboard four-screen layout, monthly SLO review cadence. |
+| `incident-response.md` | Phases (DETECT → DECIDE → MITIGATE → RESTORE → LEARN), severity scale, IC / Ops / Comms roles, mitigation-before-restoration moves, blast-radius design (bulkheads, per-tenant limits, per-region isolation), blameless postmortem template with owned + dated action items. |
+| `caching.md` | Three pre-questions (consistency, hit rate, invalidation), stampede protection combo (singleflight + XFetch probabilistic early expiration + TTL jitter), invalidation strategies (write-through, version keys, double-delete race fix), negative caching, read-your-writes patterns. |
+| `feature-flags.md` | Five flag types (release / experiment / ops / permission / kill switch), kill-switch requirements (no remote-call dependency, fail-safe default), automated kill on SLI breach, gradual rollout ladder, targeting rules, flag-debt discipline (expiration dates, owners, CI lint, quarterly audit). |
+| `migrations.md` | Expand → migrate → contract across separate deploys, common DDL patterns (`ADD COLUMN`, `NOT NULL`, rename, foreign key) with their traps, `CREATE INDEX CONCURRENTLY` / `NOT VALID` + `VALIDATE`, online schema-change tools (`gh-ost`, `pg_repack`, `pgroll`), batched throttled observable backfills. |
 
 ---
 
@@ -172,14 +191,12 @@ The bundled scripts auto-detect the stack from the project root
 
 ## Token footprint
 
-Because the references load on every code task, the skill is kept lean. The
-current corpus is roughly **32k tokens** of Markdown — the 2.0.0 compression
-pass removed internal redundancy without dropping rules, and the 2.1.0
-additions (Pydantic / Zod / validator boundary schemas, env-typed settings,
-docstring + lint conventions, deep memory-allocator coverage,
-`try`/`except`/`finally` discipline) earn their bytes against new actionable
-content rather than restating existing rules. See `CHANGELOG.md` for the
-delta-by-delta history.
+The cross-cutting + language references load on every code task; the topic
+deep-dives (`distributed`, `concurrency`, `api-contracts`, `observability`,
+`incident-response`, `caching`, `feature-flags`, `migrations`) load on demand
+when the task touches the topic. Always-loaded corpus stays lean (~32k tokens);
+the 2.2.0 topic additions add ~25k tokens of opt-in depth that only activate
+for the tasks they apply to. See `CHANGELOG.md` for the delta-by-delta history.
 
 ---
 

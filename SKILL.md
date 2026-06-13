@@ -244,19 +244,44 @@ Simple explicit systems over magical abstractions.
 - **Graceful degradation.** Cache down → DB. DB down → stale-but-cached when correctness allows. One failure must not become every failure.
 - **No startup health checks of deps.** Become Ready fast; first request fails gracefully if a dep is down. Blocking boot on a remote dep fights cascading recovery.
 
-See `references/resilience.md` for breaker and pool implementations.
+See `references/resilience.md` for breaker and pool implementations. Workflow-level reliability (cross-service, queues, idempotency) is in `references/distributed.md`. Live-system response is in `references/incident-response.md`.
+
+### Distributed & async work
+
+When a change crosses a process / queue / network boundary, single-call resilience is not enough.
+
+- **Assume at-least-once delivery.** Every consumer / webhook / retry / tool call needs an idempotency mechanism — keys + dedup tables, conditional writes, or natural CAS. "Exactly-once" without a named dedup is hand-waving.
+- **No dual writes.** `db.commit(); broker.publish()` lies on crash. Use CDC (preferred) or transactional outbox.
+- **Distributed locks need fencing tokens** + storage enforcement. Lease-only locks (e.g. Redlock-as-written) are unsafe under GC pauses or network blips.
+- **No cross-node wall-clock comparisons for correctness.** Logical clocks, version columns, monotonic counters.
+- **Order is per-partition, never global** unless designed for. Retries reorder.
+- **Saga over distributed transaction.** Compensations are mandatory per step; compensations themselves idempotent.
+
+Full reference: `references/distributed.md`.
+
+### Concurrency
+
+When a change introduces goroutines, async tasks, channels, locks, or a worker pool — `references/concurrency.md` is the rule.
+
+- **Structured concurrency by default.** Python: `asyncio.TaskGroup` (not `gather`). Go: `errgroup`. TS: `AbortController`-aware wrappers. Fire-and-forget without a lifecycle is a leak.
+- **Cancellation propagates to the bottom.** Every `await` / RPC / blocking call receives the context. Dropping it once breaks the chain below.
+- **Bounded fanout.** Semaphore-gated worker pools sized to the downstream bottleneck. No `for { go fn(item) }`.
+- **No locks held across remote calls.** Acquire → mutate local → release.
+- **CPU work off the event loop.** `run_in_executor` (Py), worker thread (Node), goroutine pool (Go).
 
 ### Backwards compatibility
 
-- **API contract changes.** Public functions, REST / gRPC endpoints, message schemas, CLI flags — any rename, removed field, or shape change needs a migration path (deprecation, dual-write, version header).
-- **Schema migrations.** Drop / rename column, `NOT NULL` on a populated table, type narrowing — landmines under rolling deploys. Expand/contract: add new shape, dual-write, migrate reads, drop old — across separate deploys.
+- **API contract changes.** Public functions, REST / gRPC endpoints, message schemas, CLI flags — any rename, removed field, or shape change needs a migration path (deprecation header, dual-write, version header). `Deprecation` (RFC 9745) + `Sunset` (RFC 8594) headers on REST; field-number reservation on protobuf. Contract tests (Pact-style) catch breaks before prod. Full discipline: `references/api-contracts.md`.
+- **Schema migrations.** Drop / rename column, `NOT NULL` on a populated table, type narrowing — landmines under rolling deploys. Expand → migrate → contract, across separate deploys. `CREATE INDEX CONCURRENTLY`; `NOT VALID` + `VALIDATE`; batched throttled backfills. Full pattern: `references/migrations.md`.
 - **Default behavior changes.** Flipping a default silently changes every call site that took it. New value opt-in; deprecate the old later.
+- **Feature-flagged rollout** for any change with non-trivial blast radius. Kill switch + gradual ladder + automated kill on SLI breach. See `references/feature-flags.md`.
 
 ### Side effects
 
 - **Beyond the diff.** A change in a low-level helper ripples. Identify every caller and check the new contract holds — read the body, don't trust the signature.
 - **Shared state.** A module-level mutable (`_CACHE = {}`, registry, singleton) the change writes to affects every reader. Document, or push state to instance scope.
-- **Event emission.** Adding / renaming / removing a published event (Kafka / NATS / webhook / SSE frame) is a public-API change — treat under Backwards compatibility.
+- **Event emission.** Adding / renaming / removing a published event (Kafka / NATS / webhook / SSE frame) is a public-API change — treat under Backwards compatibility and `references/api-contracts.md`.
+- **Caches as side effects.** A new cache layer changes consistency, adds stampede surface, and adds an invalidation contract. See `references/caching.md` — singleflight, XFetch, TTL jitter, version keys.
 
 ### Performance
 
@@ -306,11 +331,12 @@ Threat-model before code that handles input, auth, secrets, or dependencies — 
 
 ### Production readiness
 
-- **Observability.** Can you answer "what's this doing right now?" from outside the process? If not, add hooks.
+- **Observability.** Can you answer "what's this doing right now?" from outside the process? If not, add hooks. SLO design, error budgets, RED/USE, multi-window burn-rate alerting: `references/observability.md`.
 - **Logs.** Structured, correlation ids (request_id, trace_id, user_id, tenant_id) on every line. Never raw secrets or full bodies. Level matches severity — `info` state changes, `warn` self-healing failures, `error` user-visible failures.
-- **Metrics.** Counter per important event, histogram per latency, gauge per queue depth / pool utilization. Labelled by the dimension you'd slice on in an incident (tenant, route, error_kind).
-- **Tracing.** Every external call its own span; span attributes share correlation ids with logs.
+- **Metrics.** Counter per important event, histogram per latency, gauge per queue depth / pool utilization. Labelled by the dimension you'd slice on in an incident (tenant, route, error_kind). Cardinality discipline: low-cardinality on labels, high-cardinality in logs / traces.
+- **Tracing.** Every external call its own span; span attributes share correlation ids with logs. `traceparent` propagated across every boundary (HTTP, queue headers).
 - **Debuggability.** Per-request log id. `/debug` or `/healthz` exposing runtime state (pool stats, breaker state, in-flight counts). Error replies carry the trace id.
+- **Operability.** Kill switch / feature flag for every newly-launched user-visible feature (see `references/feature-flags.md`). Runbook per page-able alert. Rollback tested in the last 30 days. Postmortem template in place: `references/incident-response.md`.
 
 ### Testing (beyond happy path)
 
@@ -383,12 +409,16 @@ Past correctness, scan for cycles and bytes the change doesn't earn. Ask: "would
 
 Surface in the PR description, not just chat:
 
-- Schema migrations (any DDL).
-- Public API contract changes (REST / gRPC / SDK surface).
+- Schema migrations (any DDL). See `references/migrations.md`.
+- Public API contract changes (REST / gRPC / SDK / webhook surface). See `references/api-contracts.md`.
 - New framework / library / vendor adoption.
 - Performance-critical hot paths (request handler, ReAct loop, queue consumer, fan-out worker).
 - Security-sensitive functionality (auth, secrets, crypto, untrusted input).
 - Anything that fans out across services on deploy.
+- New cross-service workflow / saga / outbox / CDC stream. See `references/distributed.md`.
+- New distributed lock or leader election. See `references/distributed.md` → coordination.
+- New SLO, alert, or kill switch — touches the operational contract. See `references/observability.md` and `references/feature-flags.md`.
+- New cache layer with non-trivial blast radius (shared, high-traffic, or correctness-sensitive). See `references/caching.md`.
 
 ---
 
