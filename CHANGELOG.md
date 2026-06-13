@@ -5,6 +5,127 @@ based on [Keep a Changelog](https://keepachangelog.com/), and the project
 follows semantic-ish versioning for a prompt artifact (major = behavior change,
 minor = added content, patch = fixes/wording).
 
+## [2.2.0] — 2026-06-13
+
+### Added
+
+- **`scripts/review-scan.sh`** — mechanical anti-pattern grep across changed
+  files. 49 patterns across Python / TypeScript / Go (18 / 16 / 15 categories).
+  Runs as `scripts/review-scan.sh [base] [head]` / `--staged` / `--paths` /
+  `--list-patterns`. Output format `LANG | TAG | file:line: matched_text`.
+  Exit 0 iff zero hits; CI-gate-friendly.
+  - Operationalises the *Fast pass > Mechanical scan* section of SKILL.md so
+    reviews don't rely on "I'll spot those naturally" (which catches nothing).
+  - Unified justification matcher
+    `_HAS_REASON='([A-Z]{1,5}[0-9]{2,4}|[a-z]{4,})'` — accepts a lint rule code
+    (E501, F401, ARG002, TS2304, S101) or a ≥4-letter word. Reused by
+    `noqa-no-reason` / `nolint-no-reason` / `eslint-disable-no-reason`.
+  - Python pass: silenced failures, bare suppression comments, inline imports,
+    mutable defaults, `== None|True|False`, `range(len)`, insecure RNG,
+    missing `timeout=` on `requests`/`httpx`, f-string into SQL/shell,
+    `**kwargs` passthrough, `os.environ.get` outside config, `assert` / `print`
+    / `time.sleep` in non-test code, bare TODOs.
+  - TypeScript / JS pass: `: any` / `as any`, `as <T>` (excluding `as const` /
+    `as unknown`), non-null `!`, loose `==` / `!=`, `Math.random`, bare
+    `eslint-disable` / `@ts-ignore` / `@ts-nocheck`, `console.log` non-test,
+    `fetch(` without `signal:`, bare `JSON.parse`, empty `.catch(() => {})`,
+    `eval(` / `new Function(`, `setTimeout(string, …)` eval form, banned
+    `Function` / `Object` type, axios import, `process.env.X` outside config,
+    bare TODOs.
+  - Go pass: ignored error returns, `http.DefaultClient`, `math/rand` for
+    security, `fmt.Sprintf` into SQL, `fmt.Errorf` without `%w`, bare
+    `// nolint`, `panic(` non-test, `regexp.MustCompile` inside a function,
+    `ioutil.*` (deprecated), `time.Sleep` non-test, `interface{}` use, bare
+    `recover()` without re-panic, bare TODOs. Two patterns documented as
+    manual-only (`defer-in-loop`, `go-func-fire-forget`) — too noisy for a
+    one-line regex without AST awareness.
+- **`SKILL.md` > Review checklist > Fast pass > Mechanical scan** — new
+  subsection placing the grep pass *before* the prose pass. Procedure
+  (run / triage / inline / log), self-check, false-positive discipline.
+  Regexes live in the script, not in the skill text — SKILL.md describes
+  WHAT each language pass catches in prose; `scripts/review-scan.sh
+  --list-patterns` is the source of truth for the patterns themselves.
+- **`SKILL.md` > Review checklist > Fast pass > Anti-pattern fingerprints
+  extended** — added two entries:
+  - **Inline import inside a function body** with no cycle / optional-dep /
+    cost justification — explicit rule, since this was the recurring miss
+    that motivated the mechanical-scan rework.
+  - **Stacked / cross-PR conflicts and description-vs-diff drift** under
+    *Diff-shape heuristics* — PR description says X, diff does Y; cross-PR
+    symbol imports that another open PR deletes.
+- **`SKILL.md` > Review checklist > Cross-service contracts** (new
+  subsection) — BFF↔backend identity forwarding, audit attribution from
+  verified identity (not payload), string-typed cross-service coupling
+  (activity / signal / queue / event names) as a shared-module discipline,
+  "out of scope" follow-ups that leave the system broken mid-rollout.
+- **`SKILL.md` > Review checklist > Distributed-system patterns** (new
+  subsection) — at-least-once + dedup, workflow caps (turns / history /
+  age), replay-determinism, external-first writes needing compensating
+  undo / reconciler / two-phase, retry storms.
+- **`SKILL.md` > Review checklist > Observability** (new subsection) —
+  three-signals split, cardinality budgets, correlation ids across logs /
+  metrics / traces, replay-safety, sampler discipline.
+- **`SKILL.md` > Pre-post checklist** (new subsection under *Review-mode
+  output style*) — 8 mandatory boxes before submit:
+  mechanical scan ran / scan summary in verdict / 5-dim table at top /
+  anti-relabel check / backwards-compat scan / PR-description vs diff /
+  no drive-by nits / severity floor honored.
+- **`references/observability.md`** (new, ~220 lines) — logs / metrics /
+  traces discipline, level rubric, cardinality budgets, sampler design,
+  replay-safety, correlation ids. Opens conditionally when a diff emits
+  logs / metrics / traces or sizes a sampler.
+- **`references/migrations.md`** (new, ~190 lines) — expand-contract, the
+  `DROP TABLE IF EXISTS` landmine, partial-unique-for-soft-delete,
+  `CONCURRENTLY` index creation, online data migrations,
+  downgrade discipline. Opens when authoring or reviewing DDL.
+- **`references/api-contracts.md`** (new, ~200 lines) — BFF↔backend
+  identity forwarding (signed headers vs body claims), audit attribution,
+  string-typed cross-service coupling, schema evolution per layer, contract
+  tests. Opens when touching any cross-process boundary.
+- **`references/distributed.md`** (new, ~280 lines) — at-least-once +
+  idempotency keys, entity workflow per natural-id, continue-as-new caps,
+  synchronous signal handlers, replay-determinism, sagas + compensating
+  actions, retry storms, distributed locks + fencing tokens, clocks.
+  Opens for workflow engines / brokers / sagas / distributed locks.
+- **`references/python.md` > Imports — module top, not inline** (new
+  section) — three legitimate cases for deferred imports (cycle / optional
+  dep / expensive); counter-examples (stdlib re-imports, redundant
+  shadowing of a top-level import); `F811` cross-reference.
+
+### Changed
+
+- **`SKILL.md` > Review posture** now leads with "mechanical pass first,
+  prose pass second" so the cheapest part of review runs before review
+  fatigue sets in.
+- **`SKILL.md` > Mandatory reference loading** split into required (5) +
+  conditional (4); the four new references open only when the diff
+  touches that surface.
+- **`SKILL.md` > Review checklist > Backwards compatibility** points at
+  the new `references/api-contracts.md` and `references/migrations.md`.
+- **`SKILL.md` > Review checklist > Subtle bugs > Concurrency** points at
+  the partial-unique-for-soft-delete + `INSERT … ON CONFLICT` pattern in
+  `references/migrations.md`.
+- **`SKILL.md` > Review checklist > Security > Authn vs authz** points at
+  the BFF↔backend identity-forwarding discipline in
+  `references/api-contracts.md` (the recurring IDOR shape: backend trusts
+  body-supplied `user_id`).
+- **README.md** synced to list the new references + `scripts/review-scan.sh`,
+  with conditional-load explanation.
+
+### Notes
+
+- **Motivating miss.** A PR review missed eight inline imports in
+  `artifact_store/` (PR #357). The skill rule existed but only as prose; no
+  mechanical enforcement. This release turns the rule into a runnable
+  scanner and codifies "mechanical pass before prose pass" as posture.
+- **Regexes live in one place.** `SKILL.md` describes categories in prose;
+  `scripts/review-scan.sh` owns the patterns. Refining a pattern means
+  editing one file, not two. `--list-patterns` is the self-documentation.
+- **False-positive discipline.** Patterns producing > 30% FP get refined
+  or dropped. Intentional hits get a justified suppression comment so the
+  next scan doesn't re-flag them. Review fatigue from grep noise erases
+  the benefit.
+
 ## [2.1.0] — 2026-06-12
 
 ### Added
@@ -159,6 +280,7 @@ minor = added content, patch = fixes/wording).
 - `scripts/lint.sh`, `scripts/test.sh`: the format/lint and test/coverage gates
   for Python and Go.
 
+[2.2.0]: https://github.com/<your-username>/code-craft/releases/tag/v2.2.0
 [2.1.0]: https://github.com/<your-username>/code-craft/releases/tag/v2.1.0
 [2.0.0]: https://github.com/<your-username>/code-craft/releases/tag/v2.0.0
 [1.0.0]: https://github.com/<your-username>/code-craft/releases/tag/v1.0.0

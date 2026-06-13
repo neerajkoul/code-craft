@@ -196,7 +196,44 @@ Run every change through these lenses. Check fires → fix it (writing) or raise
 
 ### Fast pass — anti-pattern fingerprints
 
-30-second smoke pass. These shapes are almost always wrong:
+30-second smoke pass. These shapes are almost always wrong.
+
+#### Mechanical scan — grep before substantive review
+
+Reviews miss mechanical findings because the reviewer thinks "I'll spot those naturally" and then doesn't. **Run the grep pass first, on the diff or the worktree, before reading the code for semantics.** Output is a list of file:line hits; each one becomes a candidate finding. This is the one part of review that's literally automatable — *automate it before doing the hard parts*.
+
+**Run it** — `scripts/review-scan.sh` is the tool; all patterns live there.
+
+```bash
+scripts/review-scan.sh                  # diff vs origin/main
+scripts/review-scan.sh main HEAD~5      # arbitrary diff range
+scripts/review-scan.sh --staged         # currently-staged changes
+scripts/review-scan.sh --paths 'src/**' # explicit glob
+scripts/review-scan.sh --list-patterns  # print every pattern + description
+```
+
+Output format: `LANG | PATTERN | file:line: matched_text`. Exit 0 iff zero hits; CI can gate.
+
+**Categories covered** (per language; see `scripts/review-scan.sh` for the regex + `--list-patterns` for the current set):
+
+- **Python** — silenced failures (`except: pass`, `except BaseException`), bare suppression comments (`# noqa` / `# type: ignore` without a rule code or word-reason), **inline imports**, mutable default args, `== None`/`True`/`False`, `range(len(...))`, insecure RNG (`random.random`), missing `timeout=` on `requests.*` / `httpx.*`, `f"..."` interpolated into `execute(...)` / `subprocess.*`, `**kwargs` passthrough, `os.environ.get` outside config, `assert` / `print` / `time.sleep` in non-test code, bare TODOs.
+- **TypeScript / JS** — `: any` / `as any`, `as <T>` (excluding `as const` / `as unknown`), non-null `!`, `==` / `!=` loose equality, `Math.random`, bare `eslint-disable` / `// @ts-ignore` / `// @ts-nocheck`, `console.log` non-test, `fetch(` without `signal:`, bare `JSON.parse`, empty `.catch(() => {})`, `eval(` / `new Function(`, `setTimeout(string, …)` eval form, banned `Function` / `Object` type, axios import, `process.env.X` outside config, bare TODOs.
+- **Go** — ignored error returns (`_ = fn()`), `http.DefaultClient`, `math/rand` for security, `fmt.Sprintf` into SQL, `fmt.Errorf` without `%w`, bare `// nolint`, `panic(` in non-test, `defer` inside a loop, `regexp.MustCompile` inside a function body, `ioutil.*` (deprecated), `time.Sleep` in non-test, `interface{}` use (Go 1.18+ has `any`), bare `recover()` without re-panic, `go func()` fire-and-forget without `errgroup` / wait, bare TODOs.
+
+**Procedure**:
+
+1. **Run every applicable scan** on the changed files. One pass.
+2. **Each hit is a candidate finding.** Read the line, decide: real issue, intentional with a noqa-style justification, or false positive.
+3. **Real hits go inline.** Don't summarize "found 8 inline imports across 5 files" — file one inline per location group (group by file is fine; one comment per file).
+4. **Track the scan in the review verdict.** A line at the top: *"Mechanical scan: Python pass — 8 hits, 5 findings inline, 3 justified. TS pass — clean. Go pass — N/A no `.go` changes."* — proves the pass happened.
+
+**Self-check before posting** — every language pass either produced findings or returned clean. A language pass that wasn't run is a category that might have been missed. Re-run.
+
+**False-positive discipline**: a grep pattern hit that's intentional gets a one-line comment in the code (`# noqa: F401  shadowed inline for cycle break`) so the next scan doesn't re-flag it. Patterns that produce > 30% false-positive rate get refined or dropped — review fatigue from grep noise erases the benefit. Refinements land in `scripts/review-scan.sh`; the SKILL.md description above stays language-summary, not regex-per-pattern.
+
+#### The shape catalog
+
+Beyond the mechanical scan, these are shapes the grep doesn't catch but every code-touching review should pattern-match against:
 
 - `except: pass` / `except Exception: pass` / Go `_ = something()` on a returned error — silenced failure.
 - `# noqa` / `# type: ignore` / `eslint-disable` / `// nolint` with no inline reason.
@@ -216,6 +253,7 @@ Run every change through these lenses. Check fires → fix it (writing) or raise
 - `try` + `finally` with no `except` (Py) / no `catch` (TS) / bare `defer fn()` whose `fn` returns an error (Go) — cleanup runs, failure invisible: caller sees the raw library exception, logs lose the domain mapping and correlation context. Add the observation branch and map to a domain error before propagating. See language refs (*try / except / finally*, *defer is Go's try/finally*, *try / catch / finally*).
 - New Pydantic-less request handler (Py), validator-less JSON binding (Go), or zod-less `JSON.parse` of an untrusted payload (TS) — every untrusted boundary owes a schema. See language refs *Validation at boundaries*.
 - `**kwargs` through 3+ layers — type erasure; each hop hides a typo.
+- **Inline import inside a function body** with no cycle / optional-dep / cost justification. Inline imports run a `sys.modules` lookup on every call, hide the module's dependency surface from a quick `grep '^from'`, and encourage copy-paste sprawl. Legitimate cases: (1) breaking a circular import; (2) gating an optional dep (`import pypdf` only on PDF mime); (3) genuinely expensive imports that aren't always needed. None of those → hoist to module top. Special case: redundant inline that **shadows a same-named top-level import** (e.g. `from datetime import timedelta` inline when the top already has it) is pure noise and `ty` / `pyright` flags it as `F811`.
 - `catch (BaseException)` (Py) — also catches `KeyboardInterrupt` / `SystemExit`.
 - New `os.environ.get(...)` outside the config module — config drift; also a perf smell when per-request.
 - New `axios` import (TS), `requests.get` without `timeout=` (Py), `http.DefaultClient` (Go) — each has a wrong "no timeout" default.
@@ -481,12 +519,28 @@ FIX:
 
 ### Review posture
 
-- **Two passes.** First skim every file to map what's changing; then comment. First-pass comments are often wrong because you hadn't seen file three.
+- **Mechanical pass first, prose pass second.** Run the grep scans in *Fast pass > Mechanical scan* before reading the code for semantics. The mechanical scan is the part of review that's literally automatable; doing it last means you've already used up the review budget on the prose.
+- **Two semantic passes.** First skim every file to map what's changing; then comment. First-pass comments are often wrong because you hadn't seen file three.
 - **Ask "why this, not that".** Every non-obvious choice has an answer; phrase as a question.
 - **Cap one stretch at ~400 lines.** Past that, comments drift to noise.
 - **Walk away when you start nit-picking** — drifting from bugs to taste is the fatigue signal.
 - **Don't fix it yourself in the review.** Suggest, don't commit.
 - **Self-check each comment before posting.** WHAT specific? WHY names the mechanism? FIX works as written? Any "no" → rewrite or delete.
+
+### Pre-post checklist — every review
+
+Before clicking "Submit review", every box checked or explicit "N/A":
+
+- [ ] **Mechanical scan ran.** Every applicable language pass in *Fast pass > Mechanical scan* executed against the changed files. Hits triaged into findings or false-positives.
+- [ ] **Mechanical-scan summary in verdict.** One line per language: "Python pass: X hits → Y findings, Z false positives. Go pass: N/A — no `.go` changes."
+- [ ] **Five-dimension table at top.** Per the *Mandatory engineering dimensions > Output gate*. No dimension silent.
+- [ ] **Anti-relabel check.** Hot-path perf finding 🟢? Upgrade it. Multi-dim finding missing a tag? Add it.
+- [ ] **Backwards-compat scan.** Any rename / removed field / type change in a wire schema, public function, or DB column? Called out under *Backwards compatibility*.
+- [ ] **PR-description vs diff drift.** Description claims X; diff actually does Y? Reconciled.
+- [ ] **No drive-by style nits.** Pure formatting / naming preferences that don't change meaning → cut.
+- [ ] **Severity floor honored.** Every 🔴 is correctness / security / data-loss / crash. Every 🟡 has an impact sentence.
+
+A pre-post checklist with a missed box is a re-do, not a submit.
 
 ---
 

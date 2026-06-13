@@ -17,6 +17,29 @@ project/
 
 Domain code has no idea what database is in use; adapters know a specific database; handlers wire the two. The split is the open-closed principle in physical form.
 
+## Imports — module top, not inline
+
+Default: every `import` and `from … import …` at the top of the module, sorted by group (stdlib / third-party / first-party), no exceptions per Ruff's `I` (isort) rules.
+
+**Inline imports** (deferred to function body) are legitimate in exactly three cases:
+
+1. **Breaking a circular import.** Module A imports B, B imports A — one side defers its import into the function body to avoid the cycle. The fix is *usually* to extract the shared type into a third module; inline is the band-aid when extraction isn't yet possible.
+2. **Optional dependency gated at call time.** `import pypdf` only inside the function that reads PDFs; the dep is in an `[extras]` group that may not be installed. The function is the natural gate.
+3. **Genuinely expensive import** that isn't always needed at process startup — e.g. `import tensorflow` in a CLI tool with one ML subcommand. Rare; usually a lazy module-level proxy is cleaner.
+
+**None apply to**:
+- `import hashlib` / `import datetime` / `import json` (stdlib, always cheap at load).
+- `from same_package.types import SomeError` inside one function in the same package (no cycle, already imported above).
+- The same inline import repeated 2-3 times in the same module (copy-paste, not justification).
+- An inline `from datetime import timedelta` when the module's top-level already does `from datetime import datetime, timedelta, timezone` — pure redefinition; Ruff `F811` should flag it.
+
+**Why it matters**:
+- Inline imports run a `sys.modules` lookup on *every* call. Cached, so cheap — but not free, and it stacks at scale.
+- `grep '^from\|^import' file.py` no longer tells you the module's dependency surface. New readers grep, miss the inline lines, draw the wrong dep diagram.
+- The pattern spreads by copy-paste. A "harmless one-off" becomes the convention three months later.
+
+**Fix shape**: hoist to module top, sort with Ruff. If the import was deferred to break a cycle, extract the shared type into a smaller module both can import. If it was an optional dep, leave it but add a comment naming the extras group it belongs to.
+
 ## Type hints
 
 Everywhere; `mypy --strict` in CI. Keep types simple — `def fetch_user(user_id: str) -> User | None` good; layered `TypeVar`/`ParamSpec`/`Protocol` generics in normal application code = step back. The type system is a tool, not a hobby.

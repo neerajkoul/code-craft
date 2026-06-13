@@ -75,7 +75,8 @@ code-craft/
 │   └── migrations.md        # expand→migrate→contract, online DDL, throttled backfills
 └── scripts/
     ├── lint.sh              # format + lint gate (Python: ruff/mypy, Go: gofmt/golangci-lint)
-    └── test.sh              # test + coverage gate (pytest --cov-branch, go test -race)
+    ├── test.sh              # test + coverage gate (pytest --cov-branch, go test -race)
+    └── review-scan.sh       # mechanical anti-pattern grep across changed files (run before substantive review)
 ```
 
 | File | What it gives the assistant |
